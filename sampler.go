@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"strings"
@@ -68,6 +69,9 @@ func registerSampler(m map[string]setupFunc, app *kingpin.Application, name stri
 	bearerTokenFile := cmd.Flag("bearer-token-file", "File to read bearer token from to authenticate with store.").String()
 	insecure := cmd.Flag("insecure", "Send gRPC requests via plaintext instead of TLS.").Default("false").Bool()
 	insecureSkipVerify := cmd.Flag("insecure-skip-verify", "Skip TLS certificate verification.").Default("false").Bool()
+	CAFile := cmd.Flag("caFile", "CA file path for TLS connection").Default("").String()
+	CertFile := cmd.Flag("certFile", "CA file path for TLS connection").Default("").String()
+	KeyFile := cmd.Flag("keyFile", "CA file path for TLS connection").Default("").String()
 
 	m[name] = func(comp component.Component, g *run.Group, mux httpMux, probe prober.Probe, logger log.Logger, reg *prometheus.Registry, debugLogging bool) (prober.Probe, error) {
 		met := grpc_prometheus.NewClientMetrics()
@@ -85,6 +89,31 @@ func registerSampler(m map[string]setupFunc, app *kingpin.Application, name stri
 			config := &tls.Config{
 				InsecureSkipVerify: *insecureSkipVerify,
 			}
+			if *CAFile != "" {
+				cafile_data, err := ioutil.ReadFile(*CAFile)
+				if err != nil {
+					return nil, fmt.Errorf("unable to load specified CA cert %s: %s", CAFile, err)
+				}
+				caCertPool := x509.NewCertPool()
+				if !caCertPool.AppendCertsFromPEM(cafile_data) {
+					return nil, fmt.Errorf("unable to append CA file to cert pool")
+				}
+				config.RootCAs = caCertPool
+			}
+
+			// If a client cert & key is provided then configure TLS config accordingly.
+			if *CertFile != "" && *KeyFile == "" {
+				return nil, fmt.Errorf("client cert file %q specified without client key file", CertFile)
+			} else if *KeyFile != "" && *CertFile == "" {
+				return nil, fmt.Errorf("client key file %q specified without client cert file", KeyFile)
+			} else if *CertFile != "" && *KeyFile != "" {
+				cert, err := tls.LoadX509KeyPair(*CertFile, *KeyFile)
+				if err != nil {
+					return nil, fmt.Errorf("unable to use specified client cert (%s) & key (%s): %s", CertFile, KeyFile, err)
+				}
+				config.Certificates = []tls.Certificate{cert}
+			}
+
 			opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(config)))
 		}
 
